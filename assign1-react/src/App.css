@@ -1,0 +1,57 @@
+body{
+  background-color: #262626;
+}
+
+.hoverText{
+  border-radius: 10px;
+  background-color: #777777;
+  opacity: 0.8;
+}
+.hoverText > h1{
+  padding: 8px;
+}
+
+h1, h2, h3, h4{
+  color: white;
+}
+
+#App {
+  display: flex;
+  flex-direction: column;
+  text-align: center;
+}
+
+.UI{
+  display: flex;
+}
+
+#select{
+  min-width: 300px;
+}
+
+#content{
+  flex-grow: 1;
+}
+
+.App-logo {
+  animation: App-logo-spin infinite 20s linear;
+  height: 40vmin;
+  pointer-events: none;
+}
+
+#root{
+  padding: 20px;
+}
+
+#map{
+  margin-top: 160px;
+  height: 700px;
+  width: 100%;
+  background-color: aqua;
+}
+
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  margin: 0 auto;
+}
