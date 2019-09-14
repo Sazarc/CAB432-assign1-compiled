@@ -1,0 +1,6 @@
+.idea/
+/assign1-react/node_modules/
+/assign1/node_modules/
+
+.DS_Store
+*.xml
