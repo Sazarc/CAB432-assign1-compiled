@@ -47,7 +47,7 @@ export default class Content extends Component{
                     <h1>{this.state.season} {this.state.round.raceName} in {this.state.round.locality}, {this.state.round.country}:</h1>
                     <ReactTable
                         style={{color: 'white'}}
-                        data={this.state.round["top3"]}
+                        data={this.state.round["results"]}
                         columns={[
                             {
                                 Header: 'Results',
@@ -99,7 +99,7 @@ export default class Content extends Component{
                                 ]
                             }
                         ]}
-                        defaultPageSize={3}
+                        defaultPageSize={10}
                         className="-striped -highlight"
                     />
                 </div>

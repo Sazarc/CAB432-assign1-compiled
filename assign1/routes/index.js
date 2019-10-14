@@ -2,6 +2,12 @@ var express = require('express');
 const axios = require('axios');
 var router = express.Router();
 const cache = require('memory-cache');
+const redis = require('redis');
+const AWS = require('aws-sdk');
+
+const redisClient = redis.createClient();
+const bucketName = "BucketName";
+const redisTime = 10; // in seconds
 
 /* GET home page. */
 router.get('/', function(req, res, next) {
@@ -11,26 +17,29 @@ router.get('/', function(req, res, next) {
     }
 
     let season = req.query.season;
-    let url = "http://ergast.com/api/f1/" + season + ".json?limit=1";
+    let url = "http://ergast.com/api/f1/" + season + "/results.json?limit=500";
 
-    // Check if a cache is available
-    let cached = cache.get(season);
+    let cached = cache.get(season+"data");
     if(cached){
-        console.log("we have cache")
-        res.locals.ret = cached;
-        next();
+        console.log(cached.MRData.total);
+        getSeasonResults(season, cached.MRData.total, cached.MRData.RaceTable.Races).then((seasonResults) => {
+            res.locals.ret = seasonResults;
+            next();
+        })
     }
-
-    // If not, get new data:
     else{
         axios.get(url)
             .then(async (response) => {
                 const rsp = response.data;
+                let seasonData = await axios.get("http://ergast.com/api/f1/" + season + ".json").then((response) =>{
+                    return response.data;
+                });
                 try{
-                    //json data to respond to request
-                    let data = await getSeasonResults(season, parseInt(rsp.MRData.total));
                     // cache response for 30 mins
-                    cache.put(season, data, 1800000);
+                    await cache.put(season+'results', rsp, 1800000);
+                    await cache.put(season+'data', seasonData, 1800000);
+                    //json data to respond to request
+                    let data = await getSeasonResults(season, parseInt(seasonData.MRData.total));
                     // store in local response for next to respond
                     res.locals.ret = data;
                     next();
@@ -55,12 +64,14 @@ router.get('/', function (req, res) {
 async function getSeasonResults(season, length) {
     let jason = {season: season, length: length, results: []};
     let results = [];
-    for (let x = 1; x <= length; x++) {
-        try{
-            results.push(getRoundDetails(season, x));
+    let seasonData = cache.get(season+'data');
+    let seasonResults = cache.get(season+'results');
+    for (let x = 0; x < length; x++) {
+        if(x >= seasonResults.MRData.RaceTable.Races.length){
+            results.push(getRoundDetails(seasonData.MRData.RaceTable.Races[x], x + 1, false));
         }
-        catch (e) {
-            console.log("round fault")
+        else{
+            results.push(getRoundDetails(seasonResults.MRData.RaceTable.Races[x], x + 1, true));
         }
     }
     //await for all promises to be complete before returning
@@ -72,27 +83,7 @@ async function getSeasonResults(season, length) {
 }
 
 // get the details of each round
-async function getRoundDetails(season, x){
-    let complete = false;
-    let url = "http://ergast.com/api/f1/" + season + "/" + x + "/results.json?limit=3";
-    let raceData = await axios.get(url)
-        .then(async (response) => {
-            const rsp = response.data;
-            if(parseInt(rsp.MRData.total) !== 0){
-                complete = true;
-                return rsp.MRData.RaceTable.Races[0];
-            }
-            else{
-                return await axios.get("http://ergast.com/api/f1/" + season + "/" + x + ".json").then((response) =>{
-                    const rsp = response.data;
-                    return rsp.MRData.RaceTable.Races[0];
-                }).catch((error) => {
-                    console.log("WHOOOPS")
-                });
-            }
-        })
-        .catch((error) => { });
-
+async function getRoundDetails(raceData, x, complete){
     let data = {
         round: x,
         raceName: raceData.raceName,
@@ -109,19 +100,19 @@ async function getRoundDetails(season, x){
     };
     if(complete){
         try{
-            data.top3 = await getRoundResults(raceData.Results);
+            data.results = await getRoundResults(raceData.Results);
         }
         catch (e) {
-            data.top3 = undefined;
+            data.results = undefined;
         }
     }
     return data;
 }
 
 // get the results of the round with driver flags
-async function getRoundResults(results){
+async function getRoundResults(results) {
     let flags = [];
-    for(let i = 0; i < 3; i++){
+    for(let i = 0; i < results.length; i++){
         flags.push(getFlag(results[i].Driver.nationality));
     }
     return Promise.all(flags)
@@ -150,6 +141,9 @@ function getFlag(nationality){
     else if(nationality.toLowerCase() === 'argentine'){
         url = "https://restcountries.eu/rest/v2/name/argentina?fields=flag";
     }
+    else if(nationality.toLowerCase() === 'indian'){
+        return "https://restcountries.eu/data/ind.svg";
+    }
     else{
         url = "https://restcountries.eu/rest/v2/demonym/"+nationality+"?fields=flag";
     }
@@ -163,8 +157,41 @@ function getFlag(nationality){
         return axios.get(url).then((response) => {
             cache.put(nationality.toLowerCase(), response.data[0].flag, 180000000);
             return response.data[0].flag
-        }).catch((e) => {console.log("Flag not found")});
+        }).catch((e) => {console.log("Flag not found, "+nationality)});
     }
+}
+
+function checkStorages(key){
+    return redisClient.get(key, (err, result) => {
+        // If that key exist in Redis store
+        if (result) {
+            return JSON.parse(result);
+        } else { // Key does not exist in Redis store
+            // Check S3
+            const params = { Bucket: bucketName, Key: key};
+            return new AWS.S3({apiVersion: '2006-03-01'}).getObject(params, (err, result) => {
+                if (result) {
+                    // Serve from S3
+                    const resultJSON = JSON.parse(result.Body);
+                    redisClient.setex(key, redisTime, JSON.stringify(resultJSON));
+                    return resultJSON;
+                }
+                else {
+                    return null;
+                }
+            });
+        }
+    });
+}
+
+function storeNew(key, toStore){
+    const body = JSON.stringify(toStore);
+    const objectParams = {Bucket: bucketName, Key: key, Body: body};
+    const uploadPromise = new AWS.S3({apiVersion: '2006-03-01'}).putObject(objectParams).promise();
+    uploadPromise.then(function(data) {
+        console.log("Successfully uploaded data to " + bucketName + "/" + key);
+    });
+    redisClient.setex(key, redisTime, body);
 }
 
 module.exports = router;
