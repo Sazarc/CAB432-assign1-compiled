@@ -21,13 +21,15 @@ router.get('/', function(req, res, next) {
     let season = req.query.season;
     let url = "http://ergast.com/api/f1/" + season + "/results.json?limit=500";
 
-    checkStorages(season+'-data').then((result) => {
-        if(result){
-            getSeasonResults(season, result.MRData.total, result.MRData.RaceTable.Races).then((seasonResults) => {
-                res.locals.ret = seasonResults;
-                next();
-            })
-        }
+    checkStorages(season+'-results').then((results) => {
+        checkStorages(season+'-data').then((data) => {
+            if(results){
+                getSeasonResults(season, data.MRData.total, data.MRData.RaceTable.Races, results.MRData.RaceTable.Races).then((seasonResults) => {
+                    res.locals.ret = seasonResults;
+                    next();
+                })
+            }
+        })
     }).catch(() => {
         axios.get(url).then(async (response) => {
             const rsp = response.data;
@@ -36,10 +38,10 @@ router.get('/', function(req, res, next) {
             });
             try{
                 // cache response for 30 mins
-                storeNew(season+'-results', rsp);
-                storeNew(season+'-data', seasonData);
+                storeNew(season+'-results', JSON.stringify(rsp));
+                storeNew(season+'-data', JSON.stringify(seasonData));
                 //json data to respond to request
-                let data = await getSeasonResults(season, parseInt(seasonData.MRData.total));
+                let data = await getSeasonResults(season, parseInt(seasonData.MRData.total), seasonData, rsp);
                 // store in local response for next to respond
                 res.locals.ret = data;
                 next();
@@ -59,22 +61,21 @@ router.get('/', function (req, res) {
 });
 
 //getResults of the season
-async function getSeasonResults(season, length) {
+function getSeasonResults(season, length, seasonData, seasonResults) {
     let jason = {season: season, length: length, results: []};
     let results = [];
-    let seasonData = cache.get(season+'data');
-    let seasonResults = cache.get(season+'results');
+    // let seasonData = await cache.get(season+'data');
+    // let seasonResults = await cache.get(season+'results');
     for (let x = 0; x < length; x++) {
-        if(x >= seasonResults.MRData.RaceTable.Races.length){ // Checking if incomplete season then:
-            results.push(getRoundDetails(seasonData.MRData.RaceTable.Races[x], x + 1, false));
+        if(x >= seasonResults.length){ // Checking if incomplete season then:
+            results.push(getRoundDetails(seasonData[x], x + 1, false));
         }
         else{ // Else proceed as normal
-            results.push(getRoundDetails(seasonResults.MRData.RaceTable.Races[x], x + 1, true));
+            results.push(getRoundDetails(seasonResults[x], x + 1, true));
         }
     }
     //await for all promises to be complete before returning
     return Promise.all(results).then((values) => {
-        //console.log(values);
         jason.results = values;
         return jason;
     });
@@ -164,16 +165,14 @@ async function checkStorages(key){
         redisClient.get(key, (err, result) => {
             // If that key exist in Redis store
             if (result) {
-                resolve(result);
+                resolve(JSON.parse(result));
             } else { // Key does not exist in Redis store
-                blobService.getBlobToText(containerName, key, (err, resultJSON) => {
+                blobService.getBlobToText(containerName, key, (err, result) => {
                     if (err) {
-                        console.log("blob no existo");
                         reject("blob no existo");
                     } else {
-                        console.log(`Blob downloaded "${resultJSON}"`);
-                        redisClient.setex(key, redisTime, JSON.stringify(resultJSON));
-                        resolve(JSON.parse(resultJSON));
+                        redisClient.setex(key, redisTime, result);
+                        resolve(JSON.parse(result));
                     }
                 });
                 //
@@ -183,15 +182,14 @@ async function checkStorages(key){
 }
 
 function storeNew(key, toStore){
-    const body = JSON.stringify(toStore);
-    blobService.createBlockBlobFromText(containerName, key, body, err => {
+    blobService.createBlockBlobFromText(containerName, key, toStore, err => {
         if (err) {
             console.log(err);
         } else {
-            console.log(`Text "${body}" is written to blob storage`);
+            console.log(`Text "${key}" is written to blob storage`);
         }
     });
-    redisClient.setex(key, redisTime, body);
+    redisClient.setex(key, redisTime, toStore);
 }
 
 module.exports = router;
