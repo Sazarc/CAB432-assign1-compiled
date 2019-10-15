@@ -2,12 +2,14 @@ var express = require('express');
 const axios = require('axios');
 var router = express.Router();
 const cache = require('memory-cache');
-const redis = require('redis');
-const AWS = require('aws-sdk');
 
+const redis = require('redis');
 const redisClient = redis.createClient();
-const bucketName = "BucketName";
 const redisTime = 10; // in seconds
+
+const azurestorage = require('azure-storage');
+const containerName = "f1-db";
+blobService = azurestorage.createBlobService();
 
 /* GET home page. */
 router.get('/', function(req, res, next) {
@@ -19,40 +21,36 @@ router.get('/', function(req, res, next) {
     let season = req.query.season;
     let url = "http://ergast.com/api/f1/" + season + "/results.json?limit=500";
 
-    let cached = cache.get(season+"data");
-    if(cached){
-        console.log(cached.MRData.total);
-        getSeasonResults(season, cached.MRData.total, cached.MRData.RaceTable.Races).then((seasonResults) => {
-            res.locals.ret = seasonResults;
-            next();
-        })
-    }
-    else{
-        axios.get(url)
-            .then(async (response) => {
-                const rsp = response.data;
-                let seasonData = await axios.get("http://ergast.com/api/f1/" + season + ".json").then((response) =>{
-                    return response.data;
-                });
-                try{
-                    // cache response for 30 mins
-                    await cache.put(season+'results', rsp, 1800000);
-                    await cache.put(season+'data', seasonData, 1800000);
-                    //json data to respond to request
-                    let data = await getSeasonResults(season, parseInt(seasonData.MRData.total));
-                    // store in local response for next to respond
-                    res.locals.ret = data;
-                    next();
-                }
-                catch (e) {
-                    console.log(e);
-                }
-
+    checkStorages(season+'-data').then((result) => {
+        if(result){
+            getSeasonResults(season, result.MRData.total, result.MRData.RaceTable.Races).then((seasonResults) => {
+                res.locals.ret = seasonResults;
+                next();
             })
-            .catch((error) => {
-                res.render('error', {error})
+        }
+    }).catch(() => {
+        axios.get(url).then(async (response) => {
+            const rsp = response.data;
+            let seasonData = await axios.get("http://ergast.com/api/f1/" + season + ".json").then((response) =>{
+                return response.data;
             });
-    }
+            try{
+                // cache response for 30 mins
+                storeNew(season+'-results', rsp);
+                storeNew(season+'-data', seasonData);
+                //json data to respond to request
+                let data = await getSeasonResults(season, parseInt(seasonData.MRData.total));
+                // store in local response for next to respond
+                res.locals.ret = data;
+                next();
+            }
+            catch (e) {
+                console.log(e);
+            }
+        }).catch((error) => {
+            res.render('error', {error})
+        });
+    });
 });
 
 // Next to respond to request
@@ -67,10 +65,10 @@ async function getSeasonResults(season, length) {
     let seasonData = cache.get(season+'data');
     let seasonResults = cache.get(season+'results');
     for (let x = 0; x < length; x++) {
-        if(x >= seasonResults.MRData.RaceTable.Races.length){
+        if(x >= seasonResults.MRData.RaceTable.Races.length){ // Checking if incomplete season then:
             results.push(getRoundDetails(seasonData.MRData.RaceTable.Races[x], x + 1, false));
         }
-        else{
+        else{ // Else proceed as normal
             results.push(getRoundDetails(seasonResults.MRData.RaceTable.Races[x], x + 1, true));
         }
     }
@@ -161,35 +159,37 @@ function getFlag(nationality){
     }
 }
 
-function checkStorages(key){
-    return redisClient.get(key, (err, result) => {
-        // If that key exist in Redis store
-        if (result) {
-            return JSON.parse(result);
-        } else { // Key does not exist in Redis store
-            // Check S3
-            const params = { Bucket: bucketName, Key: key};
-            return new AWS.S3({apiVersion: '2006-03-01'}).getObject(params, (err, result) => {
-                if (result) {
-                    // Serve from S3
-                    const resultJSON = JSON.parse(result.Body);
-                    redisClient.setex(key, redisTime, JSON.stringify(resultJSON));
-                    return resultJSON;
-                }
-                else {
-                    return null;
-                }
-            });
-        }
-    });
+async function checkStorages(key){
+    return new Promise((resolve, reject) => {
+        redisClient.get(key, (err, result) => {
+            // If that key exist in Redis store
+            if (result) {
+                resolve(result);
+            } else { // Key does not exist in Redis store
+                blobService.getBlobToText(containerName, key, (err, resultJSON) => {
+                    if (err) {
+                        console.log("blob no existo");
+                        reject("blob no existo");
+                    } else {
+                        console.log(`Blob downloaded "${resultJSON}"`);
+                        redisClient.setex(key, redisTime, JSON.stringify(resultJSON));
+                        resolve(JSON.parse(resultJSON));
+                    }
+                });
+                //
+            }
+        });
+    })
 }
 
 function storeNew(key, toStore){
     const body = JSON.stringify(toStore);
-    const objectParams = {Bucket: bucketName, Key: key, Body: body};
-    const uploadPromise = new AWS.S3({apiVersion: '2006-03-01'}).putObject(objectParams).promise();
-    uploadPromise.then(function(data) {
-        console.log("Successfully uploaded data to " + bucketName + "/" + key);
+    blobService.createBlockBlobFromText(containerName, key, body, err => {
+        if (err) {
+            console.log(err);
+        } else {
+            console.log(`Text "${body}" is written to blob storage`);
+        }
     });
     redisClient.setex(key, redisTime, body);
 }

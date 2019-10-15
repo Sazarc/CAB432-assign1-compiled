@@ -6,6 +6,7 @@
     "start": "node ./bin/www"
   },
   "dependencies": {
+    "azure-storage": "^2.10.3",
     "cookie-parser": "~1.4.4",
     "debug": "~2.6.9",
     "express": "~4.16.1",
@@ -13,7 +14,8 @@
     "memory-cache": "^0.2.0",
     "morgan": "~1.9.1",
     "pug": "2.0.0-beta11",
-    "redis": "^2.8.0"
+    "redis": "^2.8.0",
+    "dotenv": "latest"
   },
   "devDependencies": {
     "aws-sdk": "^2.549.0",

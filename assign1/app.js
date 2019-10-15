@@ -6,11 +6,25 @@ var logger = require('morgan');
 
 const helmet = require('helmet');
 const cors = require('cors');
+const azurestorage = require('azure-storage');
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
+const blobService = azurestorage.createBlobService();
+const containerName = "f1-db";
 
 var indexRouter = require('./routes/index');
 var seasonRouter = require('./routes/season');
 
 var app = express();
+
+blobService.createContainerIfNotExists(containerName, { publicAccessLevel: 'blob' }, err => {
+  if (err) {
+    console.log(err);
+  } else {
+    console.log(`Container with name ${containerName} created successfully`);
+  }
+});
 
 // view engine setup
 app.set('views', path.join(__dirname, 'views'));
